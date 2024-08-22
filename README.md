@@ -1,2 +1,4 @@
-# vit_implement(working...)
+# VIT Implement(90% Complete...)
 "AN IMAGE IS WORTH 16X16 WORDS: TRANSFORMERS FOR IMAGE RECOGNITION AT SCALE" implement
+
+GPU : NVIDIA Geforce RTX 3090
