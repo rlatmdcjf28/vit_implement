@@ -2,20 +2,28 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import random_split
-
+from torch.optim import lr_scheduler
 import torchsummary
 from torchsummary import summary
 from tqdm import tqdm
-from preprocessing import Patchfy
-from dataset.load_dataset import CustomDataset, custom_dataloader
-from models import ViTModel
-import argparse
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import numpy as np
 
+import argparse
 import io
 import sys
 import os
-
+import time
 import random
+
+## Load Custom Modules
+from preprocessing import Patchfy
+from dataset.load_dataset import CustomDataset, custom_dataloader
+from models import ViTModel
+from performance_measure import loss_plot, accuracy_plot, confusionmatrix, \
+                                report, roc_n_auc, learning_rate_plot
+
+
 
 ## random seed fix
 def random_seed_fix(random_seed):
@@ -31,14 +39,19 @@ def parse():
     parser.add_argument('--dataset_dir',       type=str,   default='/home/ai/User/seungchul/cifar10/')
     parser.add_argument('--epochs',            type=int,   default=1)
     parser.add_argument('--batch_size',        type=int,   default=1)
-    parser.add_argument('--learning_rate',     type=float, default=0.001)
+    parser.add_argument('--learning_rate',     type=float, default=1e-8)
     parser.add_argument('--optimizer',         type=str,   default='Adam')
     parser.add_argument('--act_fn',            type=str,   default='GeLU')
-    parser.add_argument('--device',            type=str,   default='cpu')
-    parser.add_argument('--dropout_rate',      type=float, default=0.3)
+    parser.add_argument('--device',            type=str,   default='cuda')
+    parser.add_argument('--dropout_rate',      type=float, default=0.0)
     parser.add_argument('--random_seed',       type=int,   default=123)
-    parser.add_argument('--model_summary_dir', type=str,   default='./model_summary.txt')
+    parser.add_argument('--model_summary_dir', type=str,   default='model_summary.txt')
+    parser.add_argument('--result_dir',        type=str,   default='./result_dir/'+time.strftime("%Y%m%d_%H%M")+'/')
     
+    parser.add_argument('--classification_report_dir', type=str, default='classification_report.txt')
+    
+    parser.add_argument('--now_epochs', type=int, default=1)
+
     ## model parameters
     parser.add_argument('--patch_size',     type=int, default=8)
     parser.add_argument('--num_enc_layers', type=int, default=2)
@@ -54,12 +67,12 @@ def parse():
 
 
 def custom_dataset(args):
-    
-    # breakpoint()
 
     train_dataset = CustomDataset(root_dir=args.dataset_dir+'train')
     test_dataset  = CustomDataset(root_dir=args.dataset_dir+'test')
     
+    class_list = train_dataset.class_names_list()
+
     train_size = int(len(train_dataset) * 0.8)
     val_size   = int(len(train_dataset) * 0.2)
     
@@ -71,181 +84,114 @@ def custom_dataset(args):
                                                                            val_dataset,
                                                                            test_dataset)
     
-    return train_dataloader, val_dataloader, test_dataloader
+    return train_dataloader, val_dataloader, test_dataloader, class_list
 
-
-
-    
-'''
-def train_n_val_loop(args, train_dataloader, val_dataloader, model, criterion, optim):
-    for epoch in range(args.epochs):
-        total_train_loss = 0.0
-        total_val_loss   = 0.0
-
-        train_correct = 0
-        val_correct   = 0
-        
-        train_total = 0
-        val_total   = 0
-        
-        ## Training loop
-        for imgs, labels in train_dataloader:
-            model.train()
-            optim.zero_grad()
-            outputs = model(imgs)
-            train_loss = criterion(outputs, labels)
-            train_loss.backward()
-            optim.step()
-            total_train_loss += train_loss.item()
-            _, pred = torch.max(outputs.data, 1)
-            train_total += labels.size(0)
-            train_correct += (pred == labels).sum().item()
-        
-        train_loss = train_loss/len(train_dataloader)
-        train_acc  = 100 * train_correct / train_total
-
-        ## Validation loop
-        with torch.no_grad():
-            for imgs, labels in val_dataloader:
-                model.eval()
-                outputs = model(imgs)
-                loss = criterion(outputs, labels)
-                total_val_loss += loss.item()
-
-                _, predicted = torch.max(outputs.data, 1)
-                val_total += labels.size(0)
-                val_correct += (predicted == labels).sum().item()
-
-            val_loss = total_val_loss / len(val_dataloader)
-            val_acc = 100 * val_correct / val_total
-
-        print(f'Epoch : {epoch+1}, Train_loss : {train_loss}, Train_accuracy : {train_acc}')
-        print(f'                   Validation loss : {val_loss}, Validation accuracy : {val_acc}')
-
-
-def test_loop(model, dataloader, criterion):
-    test_loss = 0.0
-    correct   = 0
-    total     = 0
-
-    with torch.no_grad():
-        for img, labels in dataloader:
-            model.eval()
-            outputs = model(img)
-            loss = criterion(outputs, labels)
-            test_loss += loss.item()
-
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-
-    loss = test_loss / len(dataloader)
-    accuracy = 100 * correct / total
-    return loss, accuracy
-'''
 
 
 ## with tqdm
-def train_n_val_loop(args, device, train_dataloader, val_dataloader, model, criterion, optim):
+def train_loop(args, device, train_dataloader, model, criterion, optim, scheduler, 
+               _train_loss_list=[],_train_acc_list=[]):
     _train_loss_list = []
-    _val_loss_list   = []
-
     _train_acc_list = []
-    _val_acc_list   = []
+    total_train_loss = 0.0
+    train_correct = 0
+    train_total = 0
+    train_lr_list = []
 
-    for epoch in range(args.epochs):
-        total_train_loss = 0.0
-        total_val_loss   = 0.0
+    train_progress_bar = tqdm(train_dataloader, desc=f'Epoch {args.now_epochs}/{args.epochs}')
 
-        train_correct = 0
-        val_correct   = 0
+    model.train()
+    for imgs, labels in train_progress_bar:
+        imgs, labels = imgs.to(device), labels.to(device)
         
-        train_total = 0
-        val_total   = 0
+        outputs = model(imgs)
         
-        train_progress_bar = tqdm(train_dataloader, desc=f'Epoch {epoch+1}/{args.epochs}')
-        ## Training loop
-        for imgs, labels in train_progress_bar:
-            
-            imgs, labels = imgs.to(device), labels.to(device)
-
-            model.train()
-            
-            optim.zero_grad()
-            
-            outputs = model(imgs)
-            
-            train_loss = criterion(outputs, labels)
-            train_loss.backward()
-            optim.step()
-
-            total_train_loss += train_loss.item()
-            _, pred = torch.max(outputs.data, 1)
-            
-            train_total += labels.size(0)
-            train_correct += (pred == labels).sum().item()
+        train_loss = criterion(outputs, labels)
+        train_loss.backward()
         
+        optim.step()
+        optim.zero_grad()
+        
+        total_train_loss += train_loss.item()
+        _, pred = torch.max(outputs.data, 1)
+        
+        train_total += labels.size(0)
+        train_correct += (pred == labels).sum().item()
+
         train_loss = total_train_loss / len(train_dataloader)
         train_acc  = 100 * train_correct / train_total
         
-        train_progress_bar.set_postfix(loss=f'{train_loss:.4f}', acc=f'{train_acc:.2f}')
+    train_progress_bar.set_postfix(loss=f'{train_loss:.4f}', acc=f'{train_acc:.2f}')
 
-        _train_loss_list.append(train_loss)
-        _train_acc_list.append(train_acc)
-
-        train_loss_list = [round(loss, 5) for loss in _train_loss_list]
-        train_acc_list = [round(acc, 3) for acc in _train_acc_list]
-
-        ## Validation loop
-        with torch.no_grad():
-            for imgs, labels in val_dataloader:
-
-                imgs, labels = imgs.to(device), labels.to(device)
-                
-                model.eval()
-                outputs = model(imgs)
-                loss = criterion(outputs, labels)
-                total_val_loss += loss.item()
-
-                _, predicted = torch.max(outputs.data, 1)
-                val_total += labels.size(0)
-                val_correct += (predicted == labels).sum().item()
-
-            val_loss = total_val_loss / len(val_dataloader)
-            val_acc  = 100 * val_correct / val_total
-            
-            _val_loss_list.append(val_loss)
-            _val_acc_list.append(val_acc)
-
-            val_loss_list = [round(loss, 5) for loss in _val_loss_list]
-            val_acc_list = [round(acc, 5) for acc in _val_acc_list]
-
-        print(f'        Train_loss      : {train_loss:.4f}, Train_accuracy      : {train_acc:.2f}')
-        print(f'        Validation loss : {val_loss:.4f}, Validation accuracy : {val_acc:.2f}')
-        print('\n')
     
-    return train_loss_list, train_acc_list, val_loss_list, val_acc_list
+    scheduler.step()
+        
+    print('\n')
+    print(f'           Train_loss      : {train_loss:.5f},  Train_accuracy      : {train_acc:.3f}')
+    
+
+    return train_loss, train_acc
+
+def validation_loop(args, device, val_dataloader, model, criterion, optim):
+    total_val_loss = 0.0
+    val_correct = 0
+    val_total = 0
+
+    model.eval()
+    with torch.no_grad():
+        for imgs, labels in val_dataloader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            
+            outputs = model(imgs)
+            loss = criterion(outputs, labels)
+        
+            total_val_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            val_total += labels.size(0)
+            val_correct += (predicted == labels).sum().item()
+
+        val_loss = total_val_loss / len(val_dataloader)
+        val_acc  = 100 * val_correct / val_total
+        
+
+    print(f'           Validation loss : {val_loss:.5f},  Validation accuracy : {val_acc:.3f}')
+    print('\n')
+    
+    return val_loss, val_acc
 
 
-def test_loop(model, dataloader, criterion):
+def test_loop(args, model, device, dataloader, criterion):
     test_loss = 0.0
     correct   = 0
     total     = 0
+    
+    gt_labels   = []
+    pred_labels = []
 
     with torch.no_grad():
-        for img, labels in dataloader:
+        for imgs, labels in dataloader:
+            imgs, labels = imgs.to(device), labels.to(device)
             model.eval()
-            outputs = model(img)
+            outputs = model(imgs)
+            
             loss = criterion(outputs, labels)
             test_loss += loss.item()
 
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
+            
+            gt_labels.extend(labels.cpu().numpy())
+            pred_labels.extend(predicted.cpu().numpy())
 
     loss = test_loss / len(dataloader)
     accuracy = 100 * correct / total
-    return loss, accuracy
+    print('Testing Time!')
+    print('\n')
+    print(f'           Test Acc : {accuracy}')
+    print('\n')
+    
+    return pred_labels, gt_labels
 
 
 def loss_fn():
@@ -254,47 +200,120 @@ def loss_fn():
     return criterion
 
 
-def optim(args, model):
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+def optimizer(args, model): # default = Adam
+    if args.optimizer == 'Adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    elif args.optimizer == 'SGD':
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
+    
+    ## Need to think about how to make it more flexible.
 
     return optimizer
 
+
+def learning_scheduler(optim):
+    linear_lr = lr_scheduler.LinearLR(optim, total_iters=10)
+    # step_lr = lr_scheduler.StepLR(optim, step_size=10, gamma=0.8)#
+    step_lr = lr_scheduler.StepLR(optim, step_size=20, gamma=0.8)
+
+    scheduler = lr_scheduler.SequentialLR(optim, 
+                                          milestones=[10],
+                                          schedulers = \
+                                          [linear_lr, step_lr])
+    
+    return scheduler
+
+
 def model_to_txt(model, args):
-    if os.path.exists(args.model_summary_dir):
-        os.remove(args.model_summary_dir)
+    if os.path.exists(args.result_dir+args.model_summary_dir):
+        os.remove(args.result_dir+args.model_summary_dir)
 
     summary_str = io.StringIO()
     sys.stdout = summary_str
     summary(model, input_data=(3, 32, 32), col_names=('input_size', 'output_size', 'num_params'))
     sys.stdout = sys.__stdout__
-    with open(args.model_summary_dir, "w") as f:
+    with open(args.result_dir+args.model_summary_dir, "w") as f:
         f.write(summary_str.getvalue())
 
+
 def main(args): 
-    train_dataloader, val_dataloader, test_dataloader = custom_dataset(args)
+    train_dataloader, val_dataloader, test_dataloader, class_list = custom_dataset(args)
 
     model = ViTModel(args).to(args.device)
 
     model_to_txt(model, args)
-    
-    train_loss_list, train_acc_list, val_loss_list, val_acc_list = train_n_val_loop(args,
-                                                                                    args.device,
-                                                                                    train_dataloader, 
-                                                                                    val_dataloader,
-                                                                                    model, 
-                                                                                    criterion=loss_fn(), 
-                                                                                    optim=optim(args, model))
 
+    _train_loss_list = []
+    _train_acc_list  = []
+    _val_loss_list   = []
+    _val_acc_list    = []
+    lr_list          = []
+    
+    scheduler = learning_scheduler(optim=optimizer(args, model))
+
+    for _ in range(args.epochs):
+        train_loss, train_acc = train_loop(args,
+                                           args.device,
+                                           train_dataloader, 
+                                           model, 
+                                           criterion=loss_fn(),
+                                           optim=optimizer(args, model),
+                                           scheduler=scheduler)
+        
+        val_loss, val_acc = validation_loop(args,
+                                            args.device, 
+                                            val_dataloader,
+                                            model,
+                                            criterion=loss_fn(),
+                                            optim=optimizer(args, model))
+        
+        lr_list.extend(scheduler.get_last_lr())
+        args.now_epochs += 1
+        _train_loss_list.append(train_loss)
+        _train_acc_list.append(train_acc)
+        _val_loss_list.append(val_loss)
+        _val_acc_list.append(val_acc)
+
+    pred_labels, gt_labels = test_loop(args, 
+                                       model, 
+                                       args.device, 
+                                       test_dataloader, 
+                                       #criterion=loss_fn()
+                                       criterion=nn.CrossEntropyLoss())
+
+    train_loss_list = [round(loss, 5) for loss in _train_loss_list]
+    train_acc_list  = [round(acc, 3) for acc in _train_acc_list]
+    val_loss_list   = [round(loss, 5) for loss in _val_loss_list]
+    val_acc_list    = [round(acc, 3) for acc in _val_acc_list]
+
+    # breakpoint()
+    
+    learning_rate_plot(args, lr_list=lr_list)
+
+    loss_plot(train_loss_list, val_loss_list, args)
+
+    accuracy_plot(train_acc_list, val_acc_list, args)
+
+    confusionmatrix(gt_labels, pred_labels, args)
+
+    report(args, gt_labels, pred_labels, class_list)
+
+    roc_n_auc(args, gt_labels, pred_labels, class_list)
     
     breakpoint()
 
-    test_loop(model, test_dataloader, criterion=loss_fn())
+    a = 0
 
-
+def param_save(args):
+    with open(args.result_dir+'parameters.txt', "w") as f:
+        for key, value in vars(args).items():
+            f.write(f'{key}: {value}\n')
 
 if __name__=='__main__':
     args = parse()
     
+    os.makedirs(args.result_dir)
+
     random_seed_fix(args.random_seed)
 
     if args.device == 'cuda':
@@ -307,6 +326,8 @@ if __name__=='__main__':
     else:
         args.dataset_dir = '/datasets/cifar10/'
     
+    param_save(args)
+
     # breakpoint()
 
     main(args)
