@@ -18,3 +18,12 @@ mlp_size: 4096
 hidden_dim: 1024
 num_heads: 16
 num_classes: 10
+learning_scheduler: 
+
+linear_lr = lr_scheduler.LinearLR(optim, total_iters=10)
+step_lr = lr_scheduler.StepLR(optim, step_size=10, gamma=0.8)#
+scheduler = lr_scheduler.SequentialLR(optim, 
+                                          milestones=[10],
+                                          schedulers = \
+                                          [linear_lr, cawr])
+                                          

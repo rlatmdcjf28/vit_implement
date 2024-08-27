@@ -23,6 +23,7 @@ from models import ViTModel
 from performance_measure import loss_plot, accuracy_plot, confusionmatrix, \
                                 report, roc_n_auc, learning_rate_plot
 
+from torch_lr_scheduler import CosineAnnealingWarmUpRestarts as CAWR
 
 
 ## random seed fix
@@ -36,14 +37,14 @@ def parse():
     
     ## general parameters
     parser.add_argument('--training_device',   type=str,   default='lab')
-    parser.add_argument('--dataset_dir',       type=str,   default='/home/ai/User/seungchul/cifar10/')
+    parser.add_argument('--dataset_dir',       type=str,   default='/Data_RTX4090_server/datasets/cifar10/')
     parser.add_argument('--epochs',            type=int,   default=1)
     parser.add_argument('--batch_size',        type=int,   default=1)
     parser.add_argument('--learning_rate',     type=float, default=1e-8)
     parser.add_argument('--optimizer',         type=str,   default='Adam')
     parser.add_argument('--act_fn',            type=str,   default='GeLU')
     parser.add_argument('--device',            type=str,   default='cuda')
-    parser.add_argument('--dropout_rate',      type=float, default=0.0)
+    parser.add_argument('--dropout_rate',      type=float, default=0.1)
     parser.add_argument('--random_seed',       type=int,   default=123)
     parser.add_argument('--model_summary_dir', type=str,   default='model_summary.txt')
     parser.add_argument('--result_dir',        type=str,   default='./result_dir/'+time.strftime("%Y%m%d_%H%M")+'/')
@@ -202,7 +203,7 @@ def loss_fn():
 
 def optimizer(args, model): # default = Adam
     if args.optimizer == 'Adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=0.03)
     elif args.optimizer == 'SGD':
         optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
     
@@ -212,15 +213,17 @@ def optimizer(args, model): # default = Adam
 
 
 def learning_scheduler(optim):
+    breakpoint()
     linear_lr = lr_scheduler.LinearLR(optim, total_iters=10)
-    # step_lr = lr_scheduler.StepLR(optim, step_size=10, gamma=0.8)#
-    step_lr = lr_scheduler.StepLR(optim, step_size=20, gamma=0.8)
-
+    step_lr   = lr_scheduler.StepLR(optim, step_size=30, gamma=0.9)
     scheduler = lr_scheduler.SequentialLR(optim, 
                                           milestones=[10],
                                           schedulers = \
                                           [linear_lr, step_lr])
     
+    # if using CosineAnnealingWarmUpRestarts, initial learning rate should be very small.
+    # cawr = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=0)
+    # scheduler = CAWR(optim,)
     return scheduler
 
 
@@ -252,6 +255,7 @@ def main(args):
     scheduler = learning_scheduler(optim=optimizer(args, model))
 
     for _ in range(args.epochs):
+        # breakpoint()
         train_loss, train_acc = train_loop(args,
                                            args.device,
                                            train_dataloader, 
@@ -266,7 +270,7 @@ def main(args):
                                             model,
                                             criterion=loss_fn(),
                                             optim=optimizer(args, model))
-        
+        print(scheduler.get_last_lr())
         lr_list.extend(scheduler.get_last_lr())
         args.now_epochs += 1
         _train_loss_list.append(train_loss)
@@ -312,6 +316,9 @@ def param_save(args):
 if __name__=='__main__':
     args = parse()
     
+    if os.path.exists(args.result_dir):
+        os.remove(os.path(args.result_dir))
+
     os.makedirs(args.result_dir)
 
     random_seed_fix(args.random_seed)
@@ -322,7 +329,7 @@ if __name__=='__main__':
         args.device = 'cpu'
     
     if args.training_device == 'lab':
-        args.dataset_dir = '/home/ai/User/seungchul/cifar10/'
+        args.dataset_dir = '/Data_RTX4090_server/datasets/cifar10/'
     else:
         args.dataset_dir = '/datasets/cifar10/'
     

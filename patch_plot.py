@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 from dataset.load_dataset import CustomDataset, custom_dataloader
 from models import Img2Patch
 
-train_dir = '/datasets/cifar10/'
-test_dir  = '/datasets/cifar10/'
+train_dir = '/Data_RTX4090_server/datasets/cifar10/'
+test_dir  = '/Data_RTX4090_server/datasets/cifar10/'
 
 train_dataset = CustomDataset(root_dir=train_dir+'train')
 test_dataset  = CustomDataset(root_dir=test_dir+'test')
@@ -29,12 +29,16 @@ def find_key(d, value):
             return key
     return None
 
-for img, label, cls_idx in train_dataloader:
-    cls = find_key(cls_idx, label)
+# breakpoint()
+
+for img, label in train_dataloader:
+    # cls = find_key(cls_idx, label)
+    plt.figure(figsize=(4, 4))
     plt.imshow(img.reshape(3, 32, 32).permute(1, 2, 0).numpy())
-    plt.title(cls)
+    plt.title('origin image')
     plt.axis('off')
-    # plt.show()
+    plt.savefig('./origin_image.png')
+    plt.close()
     break
 
 # breakpoint()
@@ -48,7 +52,7 @@ patches = Img2Patch(patch_size=patch_size)
 
 patch = patches(img)
 
-breakpoint()
+# breakpoint()
 
 patch_numpy_list = []
 
@@ -63,9 +67,8 @@ for i, ax in enumerate(axs.flat):
 
 
 
-plt.suptitle(cls+' img to Patch')
-plt.show()
-
+plt.suptitle('img to Patch')
+plt.savefig('./patch image.png')
 
 # breakpoint()
 

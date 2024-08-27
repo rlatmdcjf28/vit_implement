@@ -5,39 +5,9 @@ import os
 from PIL import Image
 from torchvision import transforms
 
-'''
-class CustomDataset(Dataset):
-    def __init__(self, image_dir, transform=None):
-        """
-        Args:
-            image_dir : Image Directory
-            transform : 샘플에 적용될 Optional transform
-        """
-        self.image_dir = image_dir
-        self.transform = transform
-        self.labels = os.listdir(image_dir)
-        self.image_filenames = [x for x in os.listdir(image_dir+'/'+self.labels[0]) if x.endswith('.jpg') or x.endswith('.png')]
 
-
-    def __len__(self):
-        return len(self.image_filenames)
-
-    def __getitem__(self, idx):
-        img_path = os.path.join(self.image_dir+'/'+self.labels[0], self.image_filenames[idx])
-        image = Image.open(img_path).convert('RGB')  # 이미지를 RGB로 변환
-        
-        if self.transform:
-            image = self.transform(image)
-
-        return image
-'''
 class CustomDataset(Dataset):
     def __init__(self, root_dir, transform=True, Normalize=False):
-        """
-        Args:
-            root_dir (string): 데이터셋의 최상위 디렉토리
-            transform (callable, optional): 샘플에 적용될 변환
-        """
         self.root_dir = root_dir
         if transform == True:
             if Normalize == False:
@@ -53,33 +23,41 @@ class CustomDataset(Dataset):
             self.transform=None
         
         self.images = []
-        self.labels = []
+        self.classes = os.listdir(root_dir)
+        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
         
-        # 이미지 파일과 레이블 읽기
-        for root, dirs, files in os.walk(root_dir):
-            for file in files:
-                if file.endswith(".jpg") or file.endswith(".png"):
-                    self.images.append(os.path.join(root, file))
-                    self.labels.append(root.split('/')[-1])
+        self.samples = []
+        for class_name in self.classes:
+            class_dir = os.path.join(self.root_dir, class_name)
+            for img_name in os.listdir(class_dir):
+                if img_name.lower().endswith(('png', 'jpg', 'jpeg')):
+                    self.samples.append((os.path.join(class_dir, img_name), self.class_to_idx[class_name]))
 
+    def class_names_list(self):
+        keys = []
+        for key in self.class_to_idx:
+            keys.append(key)
+
+        return keys
+    
     def __len__(self):
-        return len(self.images)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        image_path = self.images[idx]
-        label = self.labels[idx]
-        image = Image.open(image_path).convert('RGB')
+        img_path, label = self.samples[idx]
+        image = Image.open(img_path).convert('RGB')
         
         if self.transform:
             image = self.transform(image)
 
         return image, label
 
-def custom_dataloader(batch_size, train_dataset, test_dataset):
+def custom_dataloader(batch_size, train_dataset, val_dataset, test_dataset):
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_dataloader   = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    val_dataloader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False, drop_last=True)
+    test_dataloader  = DataLoader(test_dataset,  batch_size=batch_size, shuffle=False)
     
-    return train_dataloader, test_dataloader
+    return train_dataloader, val_dataloader, test_dataloader
 
 
 
