@@ -1,4 +1,7 @@
-# VIT Implement(90% Complete...)
+# VIT Implement(요약 pdf도 업로드 해야 함)
+
 "AN IMAGE IS WORTH 16X16 WORDS: TRANSFORMERS FOR IMAGE RECOGNITION AT SCALE" implement
 
-GPU : NVIDIA Geforce RTX 3090
+
+
+GPU(lab) : NVIDIA Geforce RTX 3090 & 4090
